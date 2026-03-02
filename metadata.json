@@ -1,0 +1,5 @@
+{
+  "name": "ClipDash",
+  "description": "An MVP content signal extraction system to help video editors quickly extract high-value moments from long-form content.",
+  "requestFramePermissions": []
+}
