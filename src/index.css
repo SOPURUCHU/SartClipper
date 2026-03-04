@@ -9,6 +9,9 @@
   --color-primary: #87ec13;
   --color-background-light: #f7f8f6;
   --color-background-dark: #1a2210;
+  --color-moss: #48543b;
+  --color-olive: #313928;
+  --color-glass: rgba(49, 57, 40, 0.4);
 }
 
 @layer base {
@@ -19,10 +22,22 @@
 }
 
 .liquid-glass {
-  background: rgba(135, 236, 19, 0.05);
+  background: linear-gradient(135deg, rgba(135, 236, 19, 0.1), rgba(49, 57, 40, 0.6));
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(135, 236, 19, 0.1);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(135, 236, 19, 0.2);
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.liquid-glass-accent {
+  background: linear-gradient(135deg, rgba(135, 236, 19, 0.15) 0%, rgba(135, 236, 19, 0.05) 100%);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(135, 236, 19, 0.2);
+}
+
+.organic-bg {
+  background-image: radial-gradient(circle at 20% 30%, rgba(135, 236, 19, 0.15) 0%, transparent 40%),
+                    radial-gradient(circle at 80% 70%, rgba(72, 84, 59, 0.2) 0%, transparent 40%);
 }
 
 .waveform-gradient {

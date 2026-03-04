@@ -3,7 +3,22 @@ import ReactPlayer from 'react-player';
 const Player = ReactPlayer as any;
 import { 
   Loader2,
-  X
+  X,
+  Menu,
+  ChevronRight,
+  Share2,
+  Download,
+  Settings as SettingsIcon,
+  Video,
+  Library,
+  User,
+  LayoutDashboard,
+  Search,
+  TrendingUp,
+  Clock,
+  CheckCircle2,
+  AlertCircle,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDropzone } from 'react-dropzone';
@@ -17,6 +32,7 @@ import {
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -24,6 +40,62 @@ function cn(...inputs: ClassValue[]) {
 }
 
 import { extractAudioFromVideo, extractVideoFrame } from './utils/mediaUtils';
+
+// Constants for Gemini
+const SYSTEM_INSTRUCTION = `
+  You are a world-class video editor, content strategist, and expert transcriber.
+  Your task is to analyze video/audio content and provide a highly accurate, timestamped transcript and viral analysis.
+  
+  For the transcript:
+  - Break content into logical segments (usually 5-15 seconds each).
+  - Ensure timestamps are precise to the second.
+  - Transcribe the text verbatim, including important pauses or emotional cues if they add value.
+  - Assign a tag: HOOK (attention-grabbing), INSIGHT (valuable info), STORY (narrative), DATA (facts/stats), SILENCE, or FILLER.
+  - Score each segment (0-100) based on its potential to keep a viewer engaged.
+  
+  For viral clips:
+  - Identify 3-5 segments (20-60 seconds) with high viral potential.
+  - These clips should be self-contained stories or powerful insights that work well on TikTok, Reels, or Shorts.
+  - Create catchy, click-worthy titles that spark curiosity.
+  - Provide a viral potential score (0-100) based on current social media trends.
+  
+  Always return valid JSON following the provided schema.
+`;
+
+const RESPONSE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    transcript: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          start: { type: Type.NUMBER },
+          end: { type: Type.NUMBER },
+          text: { type: Type.STRING },
+          tag: { type: Type.STRING },
+          score: { type: Type.NUMBER },
+        },
+        required: ["start", "end", "text", "tag", "score"],
+      },
+    },
+    clips: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING },
+          start: { type: Type.NUMBER },
+          end: { type: Type.NUMBER },
+          title: { type: Type.STRING },
+          score: { type: Type.NUMBER },
+        },
+        required: ["id", "start", "end", "title", "score"],
+      },
+    },
+  },
+  required: ["transcript", "clips"],
+};
 
 // Types
 declare global {
@@ -70,8 +142,29 @@ const MOCK_CLIPS: ClipSuggestion[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'dashboard' | 'clips' | 'library' | 'settings' | 'profile'>('upload');
+  const [activeTab, setActiveTab] = useState<'overview' | 'upload' | 'dashboard' | 'clips' | 'library' | 'settings' | 'profile'>('overview');
+  const [tabHistory, setTabHistory] = useState<string[]>(['overview']);
+
+  const navigateTo = (tab: any) => {
+    if (tab === activeTab) return;
+    setTabHistory(prev => [...prev, tab]);
+    setActiveTab(tab);
+  };
+
+  const handleBack = () => {
+    if (tabHistory.length > 1) {
+      const newHistory = [...tabHistory];
+      newHistory.pop(); // remove current
+      const previousTab = newHistory[newHistory.length - 1];
+      setTabHistory(newHistory);
+      setActiveTab(previousTab as any);
+    } else {
+      setTabHistory(['overview']);
+      setActiveTab('overview');
+    }
+  };
   const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
   const [transcript, setTranscript] = useState<TranscriptSegment[]>(MOCK_TRANSCRIPT);
   const [clips, setClips] = useState<ClipSuggestion[]>(MOCK_CLIPS);
@@ -100,6 +193,7 @@ export default function App() {
   const [keyStatus, setKeyStatus] = useState<'idle' | 'checking' | 'active' | 'invalid' | 'quota_exceeded' | 'error'>('idle');
   const [selectedClipForShare, setSelectedClipForShare] = useState<ClipSuggestion | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showKeyInput, setShowKeyInput] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<any>(null);
@@ -135,27 +229,33 @@ export default function App() {
   };
 
   const checkKey = async (keyToTest?: string) => {
-    const key = keyToTest || manualApiKey;
+    const key = keyToTest || manualApiKey || process.env.GEMINI_API_KEY;
     if (!key) return;
     
     setKeyStatus('checking');
     try {
-      const response = await fetch('/api/check-key', {
-        headers: {
-          'x-api-key': key
+      const ai = new GoogleGenAI({ apiKey: key });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: "Say 'active'",
+        config: {
+          maxOutputTokens: 10,
         }
       });
-      const data = await response.json();
       
-      if (data.active) {
+      if (response.text && response.text.toLowerCase().includes("active")) {
         setKeyStatus('active');
       } else {
-        if (data.error === 'Quota Exceeded') setKeyStatus('quota_exceeded');
-        else if (data.error === 'Invalid API Key') setKeyStatus('invalid');
-        else setKeyStatus('error');
+        setKeyStatus('error');
       }
-    } catch (e) {
-      setKeyStatus('error');
+    } catch (error: any) {
+      console.error("API key check failed:", error);
+      const isRateLimit = error.status === 429 || error.code === 429 || (error.message && error.message.includes("429"));
+      const isInvalidKey = error.status === 401 || error.code === 401 || (error.message && error.message.toLowerCase().includes("api key"));
+      
+      if (isRateLimit) setKeyStatus('quota_exceeded');
+      else if (isInvalidKey) setKeyStatus('invalid');
+      else setKeyStatus('error');
     }
   };
 
@@ -225,11 +325,13 @@ export default function App() {
 
   const processContent = async (type: 'video' | 'url' | 'text', content: string | File) => {
     setProcessing(true);
+    setProgress(5);
     setIsMockMode(false);
     
     // Check for force mock mode
     if (forceMockMode) {
       setStatus('Using Mock Mode (API Quota Protection)...');
+      setProgress(20);
       await new Promise(resolve => setTimeout(resolve, 1500));
       
       const mockData = {
@@ -251,9 +353,11 @@ export default function App() {
         const localUrl = URL.createObjectURL(content);
         setVideoSource(localUrl);
         setStatus('Generating thumbnails for mock clips...');
-        const clipsWithThumbnails = await Promise.all(mockData.clips.map(async (clip: any) => {
+        setProgress(40);
+        const clipsWithThumbnails = await Promise.all(mockData.clips.map(async (clip: any, idx) => {
           try {
             const frame = await extractVideoFrame(content, clip.start);
+            setProgress(40 + ((idx + 1) / mockData.clips.length) * 50);
             return { ...clip, thumbnail: `data:image/jpeg;base64,${frame}` };
           } catch (e) {
             return { ...clip, thumbnail: `https://picsum.photos/seed/${clip.id}/200/200` };
@@ -261,33 +365,48 @@ export default function App() {
         }));
         setClips(clipsWithThumbnails as any);
       } else {
+        setProgress(90);
         setClips(mockData.clips.map(c => ({...c, thumbnail: `https://picsum.photos/seed/${c.id}/200/200`})) as any);
       }
       
       setTranscript(mockData.transcript as any);
       setIsMockMode(true);
-      setActiveTab('dashboard');
-      setProcessing(false);
+      setProgress(100);
+      navigateTo('dashboard');
+      setTimeout(() => {
+        setProcessing(false);
+        setProgress(0);
+      }, 500);
       return;
     }
 
     try {
-      let payload: any;
+      const apiKey = manualApiKey || process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        setNeedsApiKey(true);
+        throw new Error('No API Key found. Please provide a Gemini API key in Settings.');
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const model = "gemini-3-flash-preview";
+      
+      let contents: any;
       
       if (type === 'video' && content instanceof File) {
         // Set local video source for preview
         const localUrl = URL.createObjectURL(content);
         setVideoSource(localUrl);
 
-        // OPTIMIZATION: Extract audio and a key frame instead of sending the whole video
-        // This reduces payload size by ~90-95%
         setStatus('Extracting audio...');
+        setProgress(15);
         const audioBlob = await extractAudioFromVideo(content);
         
         setStatus('Capturing key frame...');
+        setProgress(30);
         const frameBase64 = await extractVideoFrame(content, 1);
 
         setStatus('Preparing upload...');
+        setProgress(40);
         
         // Convert audio to base64
         const audioBase64 = await new Promise<string>((resolve) => {
@@ -297,70 +416,69 @@ export default function App() {
         });
 
         setStatus('AI Analysis in progress...');
+        setProgress(50);
 
-        payload = { 
-          type: 'optimized-video', 
-          audio: audioBase64,
-          frame: frameBase64,
-          mimeType: 'audio/wav' 
+        contents = {
+          parts: [
+            { inlineData: { data: audioBase64, mimeType: 'audio/wav' } },
+            { inlineData: { data: frameBase64, mimeType: 'image/jpeg' } },
+            { text: "Analyze this audio and the provided video frame for transcript and viral clips." }
+          ]
         };
       } else {
         setStatus('AI Analysis in progress...');
-        payload = { type, content };
+        setProgress(30);
+        contents = {
+          parts: [
+            { text: `Analyze the following ${type} content: "${content}".` }
+          ]
+        };
       }
 
-      const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 1000): Promise<Response> => {
-        const response = await fetch(url, options);
-        if (response.status === 429 && retries > 0) {
-          setStatus(`Rate limited. Retrying in ${backoff/1000}s...`);
-          await new Promise(resolve => setTimeout(resolve, backoff));
-          return fetchWithRetry(url, options, retries - 1, backoff * 2);
+      const generateWithRetry = async (retries = 3, backoff = 1000): Promise<any> => {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION,
+              temperature: 0,
+              responseMimeType: "application/json",
+              responseSchema: RESPONSE_SCHEMA,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            },
+          });
+          return JSON.parse(response.text);
+        } catch (err: any) {
+          const isRateLimit = err.status === 429 || err.code === 429 || (err.message && err.message.includes("429"));
+          if (isRateLimit && retries > 0) {
+            setStatus(`Rate limited. Retrying in ${backoff/1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, backoff));
+            return generateWithRetry(retries - 1, backoff * 2);
+          }
+          throw err;
         }
-        return response;
       };
 
-      const response = await fetchWithRetry('/api/process', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-api-key': manualApiKey 
-        },
-        body: JSON.stringify(payload),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        if (errorData.error?.includes('API key not valid') || response.status === 401) {
-          setNeedsApiKey(true);
-          throw new Error('Invalid API Key. Please select a valid Gemini API key.');
-        }
-        if (response.status === 429) {
-          throw new Error('Quota Exceeded: You have reached your Gemini API limit. Please check your billing details or try again later.');
-        }
-        throw new Error(errorData.error || 'Processing failed');
-      }
-
-      const data = await response.json();
-      
-      // Detect if we got mock data from backend
-      if (data.isMock) {
-        setIsMockMode(true);
-      }
-
+      const data = await generateWithRetry();
+      setProgress(75);
       const receivedClips = data.clips || [];
       
       // If it's a video file, generate thumbnails for the clips
       if (content instanceof File && receivedClips.length > 0) {
         setStatus('Generating thumbnails...');
-        const clipsWithThumbnails = await Promise.all(receivedClips.map(async (clip: any) => {
+        const clipsWithThumbnails = [];
+        for (let i = 0; i < receivedClips.length; i++) {
+          const clip = receivedClips[i];
           try {
             const frame = await extractVideoFrame(content, clip.start);
-            return { ...clip, thumbnail: `data:image/jpeg;base64,${frame}` };
+            clipsWithThumbnails.push({ ...clip, thumbnail: `data:image/jpeg;base64,${frame}` });
           } catch (e) {
             console.warn('Failed to generate thumbnail for clip', clip.id, e);
-            return { ...clip, thumbnail: `https://picsum.photos/seed/${clip.id}/200/200` };
+            clipsWithThumbnails.push({ ...clip, thumbnail: `https://picsum.photos/seed/${clip.id}/200/200` });
           }
-        }));
+          setProgress(75 + ((i + 1) / receivedClips.length) * 20);
+        }
         setClips(clipsWithThumbnails);
       } else {
         // For non-video content, use placeholders
@@ -369,6 +487,7 @@ export default function App() {
           thumbnail: clip.thumbnail || `https://picsum.photos/seed/${clip.id}/200/200`
         }));
         setClips(clipsWithPlaceholders);
+        setProgress(95);
       }
 
       setTranscript(data.transcript || []);
@@ -387,7 +506,8 @@ export default function App() {
       setLibrary(updatedLibrary);
       localStorage.setItem('clipdash_library', JSON.stringify(updatedLibrary));
 
-      setActiveTab('dashboard');
+      setProgress(100);
+      navigateTo('dashboard');
     } catch (error: any) {
       console.error('Processing failed:', error);
       const errorMessage = error.message || 'Processing failed';
@@ -417,9 +537,11 @@ export default function App() {
         
         if (content instanceof File) {
           setStatus('Generating thumbnails for mock clips...');
-          const clipsWithThumbnails = await Promise.all(mockData.clips.map(async (clip: any) => {
+          setProgress(80);
+          const clipsWithThumbnails = await Promise.all(mockData.clips.map(async (clip: any, idx) => {
             try {
               const frame = await extractVideoFrame(content, clip.start);
+              setProgress(80 + ((idx + 1) / mockData.clips.length) * 15);
               return { ...clip, thumbnail: `data:image/jpeg;base64,${frame}` };
             } catch (e) {
               return { ...clip, thumbnail: `https://picsum.photos/seed/${clip.id}/200/200` };
@@ -430,9 +552,9 @@ export default function App() {
           setClips(mockData.clips.map(c => ({...c, thumbnail: `https://picsum.photos/seed/${c.id}/200/200`})) as any);
         }
         
-        setActiveTab('dashboard');
+        setProgress(100);
+        navigateTo('dashboard');
         alert('⚠️ Quota Exceeded: You have reached your Gemini API limit.\n\nClipDash has automatically switched to "Mock Mode" so you can continue exploring the app features. You can disable this in Settings once your quota resets.');
-        return;
       } else if (errorMessage.includes('Invalid API Key') || errorMessage.includes('401')) {
         setNeedsApiKey(true);
         alert('🔑 Invalid API Key: Please check your Gemini API key in Settings.');
@@ -440,7 +562,10 @@ export default function App() {
         alert(`❌ Error: ${errorMessage}\n\nPlease check your connection and try again.`);
       }
     } finally {
-      setProcessing(false);
+      setTimeout(() => {
+        setProcessing(false);
+        setProgress(0);
+      }, 500);
     }
   };
 
@@ -543,15 +668,123 @@ export default function App() {
   });
 
   return (
-    <div className="min-h-screen bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 flex flex-col transition-colors duration-300">
+    <div className={cn(
+      "min-h-screen bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 flex flex-col transition-colors duration-300 pb-20 md:pb-0 overflow-x-hidden",
+      activeTab === 'upload' && "organic-bg"
+    )}>
+      {/* Background Decoration Image */}
+      <div className="fixed inset-0 -z-10 pointer-events-none opacity-20">
+        <img 
+          className="w-full h-full object-cover" 
+          src="https://lh3.googleusercontent.com/aida-public/AB6AXuAHGuVFl0U_Y5LxhhDkpjmhfXH4iDfqtpfNVYhZLrVZsQDAB2HR0JXFfJed1khg4_gTn72oWXUX57vpC88JB9ccD4AKmodUafj3Xin5WBGtP9MctxhON5maJ5YGlASf4GpdSHdSMwGYAFp51WSTVgpAA9kXJ1KoMdmv4ZjQ_8a4byyGHZXBSxa14XGfB4LSVVqmtynD5qhCL_s72tfcDMV-yPrSD_Km5qnBazV7o7hqpcp8FLK5iqhoTZDNLlvVPD4GCdopBsJvTBc"
+          alt="Abstract organic background"
+          referrerPolicy="no-referrer"
+        />
+      </div>
       
-      {/* Header */}
-      <header className="flex items-center justify-between p-4 bg-background-light/50 dark:bg-background-dark/50 sticky top-0 z-50 backdrop-blur-md border-b border-primary/10">
+      {/* Mobile Header */}
+      <header className="md:hidden flex items-center justify-between p-4 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-md border-b border-primary/10 sticky top-0 z-40">
         <div className="flex items-center gap-3">
-          <div className="size-10 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
-            <span className="material-symbols-outlined text-primary">movie_edit</span>
+          {activeTab !== 'overview' ? (
+            <button 
+              onClick={handleBack}
+              className="size-10 rounded-full bg-white/5 flex items-center justify-center border border-white/10 hover:bg-white/10 transition-all text-slate-300"
+            >
+              <span className="material-symbols-outlined">arrow_back</span>
+            </button>
+          ) : (
+            <button 
+              onClick={() => navigateTo('profile')}
+              className="size-10 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden border border-primary/30"
+            >
+              <img 
+                className="w-full h-full object-cover" 
+                src="https://picsum.photos/seed/user/100/100" 
+                alt="User profile"
+                referrerPolicy="no-referrer"
+              />
+            </button>
+          )}
+          <div>
+            <h1 className="text-sm font-bold leading-tight tracking-tight text-white">
+              {activeTab === 'overview' ? 'Project Dashboard' : activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
+            </h1>
+            <p className="text-[10px] text-primary/70 font-bold uppercase tracking-widest">Clipping Studio Pro</p>
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">ClipDash</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className="size-10 rounded-full flex items-center justify-center bg-primary/10 text-primary">
+            <span className="material-symbols-outlined text-xl">notifications</span>
+          </button>
+          <button 
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="size-10 rounded-full flex items-center justify-center bg-white/5 text-slate-300"
+          >
+            <Menu className="size-5" />
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile Menu Overlay */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <motion.div
+            initial={{ opacity: 0, x: '100%' }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: '100%' }}
+            className="fixed inset-0 z-50 bg-background-light dark:bg-background-dark md:hidden"
+          >
+            <div className="p-6 space-y-8">
+              <div className="flex justify-between items-center">
+                <span className="text-xl font-black text-slate-900 dark:text-white tracking-tighter">MENU</span>
+                <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-slate-200 dark:bg-white/5 rounded-full">
+                  <X className="size-6 text-slate-600 dark:text-slate-400" />
+                </button>
+              </div>
+              <nav className="space-y-2">
+                {[
+                  { id: 'overview', icon: <LayoutDashboard className="size-5" />, label: 'Overview' },
+                  { id: 'upload', icon: <Video className="size-5" />, label: 'New Project' },
+                  { id: 'dashboard', icon: <Zap className="size-5" />, label: 'Editor' },
+                  { id: 'clips', icon: <TrendingUp className="size-5" />, label: 'Viral Clips' },
+                  { id: 'library', icon: <Library className="size-5" />, label: 'Library' },
+                  { id: 'settings', icon: <SettingsIcon className="size-5" />, label: 'Settings' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => { navigateTo(item.id as any); setIsMobileMenuOpen(false); }}
+                    className={cn(
+                      "w-full flex items-center gap-4 p-4 rounded-2xl transition-all",
+                      activeTab === item.id ? "bg-primary text-background-dark font-bold" : "text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/5"
+                    )}
+                  >
+                    {item.icon}
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Desktop Header */}
+      <header className="hidden md:flex items-center justify-between p-4 bg-background-light/50 dark:bg-background-dark/50 sticky top-0 z-50 backdrop-blur-md border-b border-primary/10">
+        <div className="flex items-center gap-3">
+          {activeTab !== 'overview' && (
+            <button 
+              onClick={handleBack}
+              className="p-2 mr-2 rounded-full hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
+            >
+              <span className="material-symbols-outlined">arrow_back</span>
+            </button>
+          )}
+          <div className="flex items-center gap-3">
+            <div className="size-10 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
+              <span className="material-symbols-outlined text-primary">movie_edit</span>
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">ClipDash</h1>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           {needsApiKey && !manualApiKey && (
@@ -619,7 +852,7 @@ export default function App() {
           )}
           
           <button 
-            onClick={() => setActiveTab('profile')}
+            onClick={() => navigateTo('profile')}
             className={cn(
               "size-10 rounded-full border-2 overflow-hidden transition-all",
               activeTab === 'profile' ? "border-primary scale-110 shadow-[0_0_15px_rgba(135,236,19,0.4)]" : "border-primary/50 hover:border-primary"
@@ -743,94 +976,244 @@ export default function App() {
         </AnimatePresence>
 
         <AnimatePresence mode="wait">
+          {activeTab === 'overview' && (
+            <motion.div
+              key="overview"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-4xl mx-auto w-full space-y-6 pb-24"
+            >
+              {/* Summary Stats Grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2 liquid-glass-accent p-6 rounded-2xl flex flex-col justify-between border border-primary/20 shadow-[0_0_20px_rgba(135,236,19,0.1)]">
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm font-medium text-slate-400 uppercase tracking-widest">Total Clips Extracted</span>
+                    <div className="size-10 rounded-full bg-primary/20 flex items-center justify-center border border-primary/30">
+                      <Zap className="size-5 text-primary" />
+                    </div>
+                  </div>
+                  <div className="mt-4">
+                    <h2 className="text-4xl font-black text-white tracking-tighter">1,284</h2>
+                    <p className="text-xs text-primary font-bold mt-2 flex items-center gap-1">
+                      <TrendingUp className="size-3" />
+                      +12% from last month
+                    </p>
+                  </div>
+                </div>
+                <div className="liquid-glass p-5 rounded-2xl border border-primary/5">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Time Saved</p>
+                  <h3 className="text-2xl font-black text-white mt-1 tracking-tight">14.5 <span className="text-xs font-normal text-slate-500">hrs</span></h3>
+                </div>
+                <div className="liquid-glass p-5 rounded-2xl border border-primary/5">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Avg Clip Score</p>
+                  <h3 className="text-2xl font-black text-white mt-1 tracking-tight">8.8<span className="text-xs font-normal text-slate-500">/10</span></h3>
+                </div>
+              </div>
+
+              {/* Active Projects Section */}
+              <section className="space-y-4">
+                <div className="flex items-center justify-between px-1">
+                  <h2 className="text-xl font-bold text-white">Active Projects</h2>
+                  <button onClick={() => navigateTo('library')} className="text-primary text-xs font-bold uppercase tracking-widest hover:underline">View All</button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Project Card 1: In Progress */}
+                  <div className="liquid-glass rounded-2xl overflow-hidden border border-primary/10 group hover:border-primary/30 transition-all">
+                    <div className="h-40 w-full relative">
+                      <img 
+                        src="https://picsum.photos/seed/podcast/800/400" 
+                        className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity" 
+                        alt="Project thumbnail"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-background-dark/90 via-background-dark/20 to-transparent"></div>
+                      <div className="absolute bottom-4 left-4">
+                        <span className="bg-primary/20 backdrop-blur-md text-primary text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider border border-primary/30">In Progress</span>
+                      </div>
+                    </div>
+                    <div className="p-5 space-y-4">
+                      <div>
+                        <h3 className="font-bold text-lg text-white">Joe Rogan #2100</h3>
+                        <p className="text-xs text-slate-400 mt-1">Processing: 68% complete</p>
+                      </div>
+                      {/* Progress Bar */}
+                      <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-primary h-full w-[68%] shadow-[0_0_10px_rgba(135,236,19,0.5)]"></div>
+                      </div>
+                      {/* Metrics */}
+                      <div className="flex items-center gap-6 border-t border-white/5 pt-4">
+                        <div className="flex items-center gap-2">
+                          <Share2 className="size-4 text-primary" />
+                          <span className="text-xs font-bold text-slate-300">12 Hooks</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="size-4 text-primary" />
+                          <span className="text-xs font-bold text-slate-300">4 Peaks</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Project Card 2: Completed */}
+                  <div className="liquid-glass rounded-2xl overflow-hidden border border-primary/10 group hover:border-primary/30 transition-all">
+                    <div className="h-40 w-full relative">
+                      <img 
+                        src="https://picsum.photos/seed/science/800/400" 
+                        className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity" 
+                        alt="Project thumbnail"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-background-dark/90 via-background-dark/20 to-transparent"></div>
+                      <div className="absolute bottom-4 left-4">
+                        <span className="bg-blue-500/20 backdrop-blur-md text-blue-400 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider border border-blue-500/30">Completed</span>
+                      </div>
+                    </div>
+                    <div className="p-5 space-y-4">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="font-bold text-lg text-white">Huberman Lab - Focus</h3>
+                          <p className="text-xs text-slate-400 mt-1">Ready for export</p>
+                        </div>
+                        <button onClick={() => navigateTo('dashboard')} className="bg-primary text-background-dark px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-tight hover:scale-105 transition-transform">Export</button>
+                      </div>
+                      {/* Progress Bar (Full) */}
+                      <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-primary h-full w-full shadow-[0_0_10px_rgba(135,236,19,0.3)]"></div>
+                      </div>
+                      {/* Metrics */}
+                      <div className="flex items-center gap-6 border-t border-white/5 pt-4">
+                        <div className="flex items-center gap-2">
+                          <Share2 className="size-4 text-primary" />
+                          <span className="text-xs font-bold text-slate-300">28 Hooks</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="size-4 text-primary" />
+                          <span className="text-xs font-bold text-slate-300">9 Peaks</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Floating Action Button */}
+              <button 
+                onClick={() => navigateTo('upload')}
+                className="fixed right-6 bottom-24 size-14 bg-primary text-background-dark rounded-full shadow-[0_8px_24px_rgba(135,236,19,0.4)] flex items-center justify-center z-40 hover:scale-110 transition-transform active:scale-95 group"
+              >
+                <span className="material-symbols-outlined text-3xl font-bold group-hover:rotate-90 transition-transform">add</span>
+              </button>
+            </motion.div>
+          )}
+
           {activeTab === 'upload' && (
             <motion.div 
               key="upload"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-md mx-auto w-full space-y-8 py-12"
+              className="max-w-xl mx-auto w-full space-y-6 py-6"
             >
-              <section className="liquid-glass rounded-xl overflow-hidden border border-primary/20 p-1">
+              {/* Upload Media Drop Zone */}
+              <section className="flex flex-col">
                 <div 
                   {...getRootProps()}
-                  className="rounded-xl p-8 flex flex-col items-center justify-center text-center h-64 cursor-pointer hover:bg-primary/5 transition-colors group border-2 border-dashed border-primary/20"
+                  className="liquid-glass flex flex-col items-center gap-6 rounded-2xl border-2 border-dashed border-primary/30 px-6 py-12 transition-all hover:border-primary/60 group cursor-pointer"
                 >
                   <input {...getInputProps()} />
-                  <div className="size-16 rounded-full bg-primary/90 text-background-dark mb-4 flex items-center justify-center shadow-[0_0_20px_rgba(135,236,19,0.4)] group-hover:scale-110 transition-transform duration-300">
-                    <span className="material-symbols-outlined text-3xl">cloud_upload</span>
+                  <div className="bg-primary/20 p-4 rounded-full group-hover:scale-110 transition-transform">
+                    <span className="material-symbols-outlined text-primary text-4xl">cloud_upload</span>
                   </div>
-                  <h2 className="text-xl font-semibold text-slate-100 mb-2">Upload Media</h2>
-                  <p className="text-sm text-slate-400 mb-4">MP4, MOV, MP3 supported</p>
-                  <span className="text-xs px-3 py-1 rounded-full bg-primary/20 border border-primary/30 text-primary">
-                    Max 2GB
-                  </span>
+                  <div className="flex flex-col items-center gap-2">
+                    <p className="text-slate-900 dark:text-slate-100 text-xl font-bold leading-tight tracking-tight text-center">Upload Media</p>
+                    <p className="text-slate-600 dark:text-slate-400 text-sm font-normal leading-normal max-w-[280px] text-center">Drag and drop your video or audio files here to start clipping</p>
+                  </div>
+                  <button className="flex min-w-[140px] cursor-pointer items-center justify-center overflow-hidden rounded-xl h-12 px-6 bg-primary text-background-dark text-sm font-bold leading-normal tracking-wide shadow-lg shadow-primary/20 active:scale-95 transition-all">
+                    <span>Browse Files</span>
+                  </button>
                 </div>
               </section>
 
-              <section className="space-y-4">
-                <div className="liquid-glass rounded-xl p-4 border border-primary/10">
-                  <label className="block text-xs font-bold uppercase tracking-widest text-primary/70 mb-2 ml-1">
-                    Import from URL
-                  </label>
-                  <div className="relative flex items-center">
-                    <span className="absolute left-3 material-symbols-outlined text-primary text-sm">link</span>
+              {/* Import from URL */}
+              <section className="space-y-3">
+                <label className="flex flex-col">
+                  <p className="text-slate-900 dark:text-slate-100 text-base font-semibold leading-normal pb-2 px-1">Import from URL</p>
+                  <div className="flex w-full items-stretch liquid-glass rounded-xl overflow-hidden p-1">
                     <input 
-                      className="w-full bg-black/20 border-0 rounded-lg py-3 pl-10 pr-12 text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-primary transition-all outline-none" 
-                      placeholder="Paste YouTube link here..." 
-                      type="url"
+                      className="flex w-full min-w-0 flex-1 resize-none border-none bg-transparent focus:ring-0 text-slate-900 dark:text-slate-100 h-12 placeholder:text-moss text-base font-normal leading-normal px-4 outline-none" 
+                      placeholder="YouTube or Vimeo link..." 
                       value={youtubeUrl}
                       onChange={(e) => setYoutubeUrl(e.target.value)}
                     />
                     <button 
                       onClick={() => youtubeUrl && processContent('url', youtubeUrl)}
-                      className="absolute right-2 p-1.5 rounded-lg bg-primary text-background-dark hover:scale-105 transition-transform shadow-md"
+                      className="bg-moss hover:bg-moss/80 text-primary flex items-center justify-center px-4 rounded-lg transition-colors"
                     >
-                      <span className="material-symbols-outlined text-sm">arrow_forward</span>
+                      <span className="material-symbols-outlined">link</span>
                     </button>
                   </div>
-                </div>
-
-                <div className="liquid-glass rounded-xl p-4 border border-primary/10">
-                  <div className="flex justify-between items-center mb-2 ml-1">
-                    <label className="text-xs font-bold uppercase tracking-widest text-primary/70">
-                      Raw Content
-                    </label>
-                    <span className="text-xs text-slate-500">Optional</span>
-                  </div>
-                  <div className="relative">
-                    <textarea 
-                      className="w-full bg-black/20 border-0 rounded-lg p-3 text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-primary resize-none transition-all outline-none" 
-                      placeholder="Paste text or script here..." 
-                      rows={3}
-                      value={rawContent}
-                      onChange={(e) => setRawContent(e.target.value)}
-                    />
-                    <span className="absolute bottom-3 right-3 material-symbols-outlined text-primary/50 text-sm">text_fields</span>
-                  </div>
-                </div>
+                </label>
               </section>
 
-              <button 
-                onClick={() => {
-                  if (rawContent) processContent('text', rawContent);
-                  else if (youtubeUrl) processContent('url', youtubeUrl);
-                  else onDrop([]); // Fallback to mock
-                }}
-                className="w-full py-4 rounded-xl bg-primary text-background-dark font-bold text-lg shadow-[0_0_20px_rgba(135,236,19,0.3)] hover:shadow-[0_0_30px_rgba(135,236,19,0.5)] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-              >
-                <span>Start Extraction</span>
-                <span className="material-symbols-outlined">bolt</span>
-              </button>
+              {/* Raw Content */}
+              <section className="space-y-3">
+                <label className="flex flex-col">
+                  <p className="text-slate-900 dark:text-slate-100 text-base font-semibold leading-normal pb-2 px-1">Raw Content</p>
+                  <textarea 
+                    className="liquid-glass flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-xl text-slate-900 dark:text-slate-100 focus:outline-0 focus:ring-1 focus:ring-primary/40 border-none min-h-[160px] placeholder:text-moss/60 p-4 text-base font-normal leading-relaxed bg-transparent" 
+                    placeholder="Paste your video scripts, transcripts, or raw text content here for AI processing..."
+                    value={rawContent}
+                    onChange={(e) => setRawContent(e.target.value)}
+                  ></textarea>
+                </label>
+              </section>
+
+              {/* Bottom Action Button */}
+              <div className="pt-4">
+                <button 
+                  onClick={() => {
+                    if (rawContent) processContent('text', rawContent);
+                    else if (youtubeUrl) processContent('url', youtubeUrl);
+                    else onDrop([]); // Fallback to mock
+                  }}
+                  className="w-full flex cursor-pointer items-center justify-center overflow-hidden rounded-xl h-14 bg-olive text-primary text-base font-bold leading-normal tracking-widest border border-primary/20 shadow-xl active:scale-[0.98] transition-all"
+                >
+                  <span className="material-symbols-outlined mr-2">auto_fix_high</span>
+                  START EXTRACTION
+                </button>
+              </div>
 
               {processing && (
-                <div className="fixed inset-0 z-[100] liquid-glass bg-black/40 backdrop-blur-xl flex flex-col items-center justify-center gap-6">
-                  <div className="size-20 rounded-3xl bg-primary flex items-center justify-center shadow-[0_0_30px_rgba(135,236,19,0.4)] animate-bounce">
-                    <Loader2 className="size-10 text-background-dark animate-spin" />
+                <div className="fixed inset-0 z-[100] liquid-glass bg-black/40 backdrop-blur-xl flex flex-col items-center justify-center p-6 gap-8">
+                  <div className="relative">
+                    <div className="size-24 rounded-3xl bg-primary flex items-center justify-center shadow-[0_0_30px_rgba(135,236,19,0.4)] animate-bounce">
+                      <Loader2 className="size-12 text-background-dark animate-spin" />
+                    </div>
+                    <div className="absolute -top-2 -right-2 size-8 rounded-full bg-white text-background-dark flex items-center justify-center text-[10px] font-black shadow-lg">
+                      {Math.round(progress)}%
+                    </div>
                   </div>
-                  <div className="text-center space-y-2">
-                    <h3 className="text-2xl font-bold text-white">Processing Content</h3>
-                    <p className="text-primary/80">Generating transcript and scoring segments...</p>
+                  
+                  <div className="text-center space-y-4 w-full max-w-xs">
+                    <div className="space-y-1">
+                      <h3 className="text-2xl font-bold text-white tracking-tight">Processing Content</h3>
+                      <p className="text-primary/80 text-sm font-medium uppercase tracking-widest">{status || 'Analyzing media...'}</p>
+                    </div>
+                    
+                    <div className="w-full bg-white/10 h-3 rounded-full overflow-hidden border border-white/5 p-0.5">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progress}%` }}
+                        className="h-full bg-primary rounded-full shadow-[0_0_15px_rgba(135,236,19,0.6)]"
+                      />
+                    </div>
+                    
+                    <div className="flex justify-between items-center px-1">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">AI Extraction</span>
+                      <span className="text-[10px] text-primary font-bold uppercase tracking-tighter">Step {progress < 30 ? '1/4' : progress < 60 ? '2/4' : progress < 85 ? '3/4' : '4/4'}</span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -843,223 +1226,210 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="space-y-6 max-w-4xl mx-auto"
+              className="space-y-6 max-w-6xl mx-auto"
             >
-              {/* Video Player Section */}
-              <section className="liquid-glass rounded-xl overflow-hidden border border-primary/20 relative">
-                {isMockMode && (
-                  <div className="absolute top-4 left-4 z-20 px-3 py-1 bg-amber-500/90 text-black text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-pulse">
-                    <span className="material-symbols-outlined text-xs">warning</span>
-                    MOCK MODE: NO API KEY DETECTED
-                  </div>
-                )}
-                <div className="relative aspect-video bg-black group">
-                  {isYoutubeUrl(videoSource) ? (
-                    <Player
-                      ref={playerRef}
-                      url={videoSource}
-                      width="100%"
-                      height="100%"
-                      playing={isPlaying}
-                      onProgress={handlePlayerProgress}
-                      onDuration={handlePlayerDuration}
-                      controls={false}
-                      className="opacity-80"
-                    />
-                  ) : (
-                    <video 
-                      ref={videoRef}
-                      onTimeUpdate={handleTimeUpdate}
-                      onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
-                      src={videoSource} 
-                      className="w-full h-full object-contain opacity-80"
-                    />
-                  )}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <button 
-                      onClick={togglePlay}
-                      className="size-16 rounded-full bg-primary/90 text-background-dark flex items-center justify-center shadow-[0_0_20px_rgba(135,236,19,0.4)] hover:scale-110 transition-transform"
-                    >
-                      <span className="material-symbols-outlined text-3xl fill-1">
-                        {isPlaying ? 'pause' : 'play_arrow'}
-                      </span>
-                    </button>
-                  </div>
-                  <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs font-medium text-primary">
-                        {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')} / {Math.floor(duration / 60)}:{(Math.floor(duration % 60)).toString().padStart(2, '0')}
-                      </span>
-                      <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-primary shadow-[0_0_10px_#87ec13]" 
-                          style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
-                        />
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left Column: Video Player */}
+                <div className="lg:col-span-2 space-y-6">
+                  <section className="liquid-glass rounded-xl overflow-hidden border border-primary/20 relative">
+                    {isMockMode && (
+                      <div className="absolute top-4 left-4 z-20 px-3 py-1 bg-amber-500/90 text-black text-[10px] font-bold rounded-full flex items-center gap-1 shadow-lg animate-pulse">
+                        <span className="material-symbols-outlined text-xs">warning</span>
+                        MOCK MODE: NO API KEY DETECTED
                       </div>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="p-4 space-y-3">
-                  <div className="flex justify-between items-end">
-                    <span className="text-xs uppercase tracking-widest text-primary/70 font-bold">Emotional Intensity</span>
-                    <span className="text-xs text-slate-400">Peak detected at 02:10</span>
-                  </div>
-                  {/* Waveform Visualization */}
-                  <div className="h-12 w-full flex items-end gap-[2px]">
-                    {Array.from({ length: 24 }).map((_, i) => {
-                      const height = Math.random() * 80 + 20;
-                      const isActive = (currentTime / 60) * 24 > i;
-                      return (
-                        <div 
-                          key={i}
-                          className={cn(
-                            "flex-1 rounded-t-sm transition-all duration-300",
-                            isActive ? "waveform-gradient" : "bg-primary/20"
-                          )}
-                          style={{ height: `${height}%` }}
+                    )}
+                    <div className="relative aspect-video bg-black group">
+                      {isYoutubeUrl(videoSource) ? (
+                        <Player
+                          ref={playerRef}
+                          url={videoSource}
+                          width="100%"
+                          height="100%"
+                          playing={isPlaying}
+                          onProgress={handlePlayerProgress}
+                          onDuration={handlePlayerDuration}
+                          controls={false}
+                          className="opacity-80"
                         />
-                      );
-                    })}
-                  </div>
-                </div>
-              </section>
-
-              {/* Transcript Section */}
-              <section className="space-y-3">
-                <h3 className="text-sm font-bold text-primary/80 uppercase tracking-widest flex items-center justify-between px-1">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sm">notes</span> Transcript
-                  </div>
-                  <button 
-                    onClick={() => exportData(transcript, 'transcript.json')}
-                    className="text-[10px] text-primary hover:underline"
-                  >
-                    Export JSON
-                  </button>
-                </h3>
-                <div className="liquid-glass rounded-xl p-4 max-h-60 overflow-y-auto space-y-4 border border-primary/10 scrollbar-hide">
-                  {filteredTranscript.map((seg, idx) => (
-                    <div 
-                      key={idx}
-                      className={cn(
-                        "group relative space-y-2 cursor-pointer transition-all",
-                        currentTime >= seg.start && currentTime < seg.end ? "opacity-100" : "opacity-60 hover:opacity-80"
+                      ) : (
+                        <video 
+                          ref={videoRef}
+                          onTimeUpdate={handleTimeUpdate}
+                          onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
+                          src={videoSource} 
+                          className="w-full h-full object-contain opacity-80"
+                        />
                       )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div onClick={() => seekTo(seg.start)} className="flex-1 flex items-start gap-3">
-                          <span className={cn(
-                            "px-2 py-0.5 rounded text-[10px] font-bold border mt-1",
-                            seg.tag === 'HOOK' ? "bg-primary/20 text-primary border-primary/30" : "bg-slate-700/50 text-slate-300 border-slate-600"
-                          )}>
-                            {seg.tag === 'HOOK' ? 'HOOK' : Math.floor(seg.start / 60) + ':' + (seg.start % 60).toString().padStart(2, '0')}
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <button 
+                          onClick={togglePlay}
+                          className="size-16 rounded-full bg-primary/90 text-background-dark flex items-center justify-center shadow-[0_0_20px_rgba(135,236,19,0.4)] hover:scale-110 transition-transform"
+                        >
+                          <span className="material-symbols-outlined text-3xl fill-1">
+                            {isPlaying ? 'pause' : 'play_arrow'}
                           </span>
-                          <p className={cn(
-                            "leading-relaxed text-sm",
-                            currentTime >= seg.start && currentTime < seg.end ? "text-slate-100" : "text-slate-400"
-                          )}>
-                            {seg.text}
-                          </p>
-                        </div>
-                        
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); handleTranscriptFeedback(idx, 'positive'); }}
-                            className={cn(
-                              "p-1 rounded hover:bg-white/10 transition-colors",
-                              seg.feedback === 'positive' ? "text-primary" : "text-slate-500"
-                            )}
-                          >
-                            <span className={cn("material-symbols-outlined text-sm", seg.feedback === 'positive' && "fill-1")}>thumb_up</span>
-                          </button>
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); handleTranscriptFeedback(idx, 'negative'); }}
-                            className={cn(
-                              "p-1 rounded hover:bg-white/10 transition-colors",
-                              seg.feedback === 'negative' ? "text-red-400" : "text-slate-500"
-                            )}
-                          >
-                            <span className={cn("material-symbols-outlined text-sm", seg.feedback === 'negative' && "fill-1")}>thumb_down</span>
-                          </button>
+                        </button>
+                      </div>
+                      <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-medium text-primary">
+                            {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')} / {Math.floor(duration / 60)}:{(Math.floor(duration % 60)).toString().padStart(2, '0')}
+                          </span>
+                          <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-primary shadow-[0_0_10px_#87ec13]" 
+                              style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </section>
-
-              {/* Viral Candidates Section */}
-              <section className="space-y-4 pb-20">
-                <h3 className="text-sm font-bold text-primary/80 uppercase tracking-widest flex items-center gap-2 px-1">
-                  <span className="material-symbols-outlined text-sm">trending_up</span> Viral Candidates
-                </h3>
-                <div className="space-y-3">
-                  {clips.length > 0 ? (
-                    clips.map(clip => (
-                      <div key={clip.id} className="liquid-glass p-3 rounded-lg flex items-center justify-between border-l-4 border-l-primary group">
-                        <div className="flex items-center gap-3">
-                          <div className="size-12 rounded bg-background-dark overflow-hidden relative">
-                            <img 
-                              className="w-full h-full object-cover" 
-                              src={clip.thumbnail} 
-                              alt={clip.title}
-                              referrerPolicy="no-referrer"
+                    
+                    <div className="p-4 space-y-3">
+                      <div className="flex justify-between items-end">
+                        <span className="text-xs uppercase tracking-widest text-primary/70 font-bold">Emotional Intensity</span>
+                        <span className="text-xs text-slate-400">Peak detected at 02:10</span>
+                      </div>
+                      {/* Waveform Visualization */}
+                      <div className="h-12 w-full flex items-end gap-[2px]">
+                        {Array.from({ length: 24 }).map((_, i) => {
+                          const height = Math.random() * 80 + 20;
+                          const isActive = (currentTime / 60) * 24 > i;
+                          return (
+                            <div 
+                              key={i}
+                              className={cn(
+                                "flex-1 rounded-t-sm transition-all duration-300",
+                                isActive ? "waveform-gradient" : "bg-primary/20"
+                              )}
+                              style={{ height: `${height}%` }}
                             />
-                            <div className="absolute inset-0 bg-primary/10"></div>
-                          </div>
-                          <div>
-                            <p className="font-medium text-sm text-slate-100">{clip.title}</p>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-primary font-bold">{clip.score} Viral Score</span>
-                              <span className="text-[10px] text-slate-500">• {Math.floor((clip.end - clip.start) / 60)}:{Math.floor((clip.end - clip.start) % 60).toString().padStart(2, '0')}s</span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                {/* Right Column: Transcript & Clips */}
+                <div className="space-y-6">
+                  {/* Transcript Section */}
+                  <section className="space-y-3">
+                    <h3 className="text-sm font-bold text-primary/80 uppercase tracking-widest flex items-center justify-between px-1">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-sm">notes</span> Transcript
+                      </div>
+                      <button 
+                        onClick={() => exportData(transcript, 'transcript.json')}
+                        className="text-[10px] text-primary hover:underline"
+                      >
+                        Export JSON
+                      </button>
+                    </h3>
+                    <div className="liquid-glass rounded-xl p-4 max-h-[300px] lg:max-h-[400px] overflow-y-auto space-y-4 border border-primary/10 scrollbar-hide">
+                      {filteredTranscript.map((seg, idx) => (
+                        <div 
+                          key={idx}
+                          className={cn(
+                            "group relative space-y-2 cursor-pointer transition-all",
+                            currentTime >= seg.start && currentTime < seg.end ? "opacity-100" : "opacity-60 hover:opacity-80"
+                          )}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div onClick={() => seekTo(seg.start)} className="flex-1 flex items-start gap-3">
+                              <span className={cn(
+                                "px-2 py-0.5 rounded text-[10px] font-bold border mt-1",
+                                seg.tag === 'HOOK' ? "bg-primary/20 text-primary border-primary/30" : "bg-slate-700/50 text-slate-300 border-slate-600"
+                              )}>
+                                {seg.tag === 'HOOK' ? 'HOOK' : Math.floor(seg.start / 60) + ':' + (seg.start % 60).toString().padStart(2, '0')}
+                              </span>
+                              <p className={cn(
+                                "leading-relaxed text-sm",
+                                currentTime >= seg.start && currentTime < seg.end ? "text-slate-100" : "text-slate-400"
+                              )}>
+                                {seg.text}
+                              </p>
+                            </div>
+                            
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleTranscriptFeedback(idx, 'positive'); }}
+                                className={cn(
+                                  "p-1 rounded hover:bg-white/10 transition-colors",
+                                  seg.feedback === 'positive' ? "text-primary" : "text-slate-500"
+                                )}
+                              >
+                                <span className={cn("material-symbols-outlined text-sm", seg.feedback === 'positive' && "fill-1")}>thumb_up</span>
+                              </button>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleTranscriptFeedback(idx, 'negative'); }}
+                                className={cn(
+                                  "p-1 rounded hover:bg-white/10 transition-colors",
+                                  seg.feedback === 'negative' ? "text-red-400" : "text-slate-500"
+                                )}
+                              >
+                                <span className={cn("material-symbols-outlined text-sm", seg.feedback === 'negative' && "fill-1")}>thumb_down</span>
+                              </button>
                             </div>
                           </div>
                         </div>
-                        <div className="flex gap-2">
-                          <div className="flex items-center gap-1 mr-2">
-                            <button 
-                              onClick={() => handleClipFeedback(clip.id, 'positive')}
-                              className={cn(
-                                "p-1.5 rounded-full hover:bg-white/10 transition-colors",
-                                clip.feedback === 'positive' ? "text-primary bg-primary/10" : "text-slate-500"
-                              )}
-                            >
-                              <span className={cn("material-symbols-outlined text-sm", clip.feedback === 'positive' && "fill-1")}>thumb_up</span>
-                            </button>
-                            <button 
-                              onClick={() => handleClipFeedback(clip.id, 'negative')}
-                              className={cn(
-                                "p-1.5 rounded-full hover:bg-white/10 transition-colors",
-                                clip.feedback === 'negative' ? "text-red-400 bg-red-400/10" : "text-slate-500"
-                              )}
-                            >
-                              <span className={cn("material-symbols-outlined text-sm", clip.feedback === 'negative' && "fill-1")}>thumb_down</span>
-                            </button>
-                          </div>
-                          <button 
-                            onClick={() => seekTo(clip.start)}
-                            className="bg-primary/20 text-primary p-2 rounded-full hover:bg-primary/30 transition-colors flex items-center justify-center"
-                          >
-                            <span className="material-symbols-outlined text-lg">play_arrow</span>
-                          </button>
-                          <button 
-                            onClick={() => setSelectedClipForShare(clip)}
-                            className="bg-primary text-background-dark p-2 rounded-full hover:scale-105 transition-transform flex items-center justify-center"
-                          >
-                            <span className="material-symbols-outlined text-lg">share</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="liquid-glass p-8 rounded-lg text-center border border-dashed border-primary/30">
-                      <span className="material-symbols-outlined text-3xl text-primary/50 mb-2">sentiment_dissatisfied</span>
-                      <p className="text-sm text-slate-400">No viral candidates identified yet. Try a different video or check your API key.</p>
+                      ))}
                     </div>
-                  )}
+                  </section>
+
+                  {/* Viral Candidates Section */}
+                  <section className="space-y-4">
+                    <h3 className="text-sm font-bold text-primary/80 uppercase tracking-widest flex items-center gap-2 px-1">
+                      <span className="material-symbols-outlined text-sm">trending_up</span> Viral Candidates
+                    </h3>
+                    <div className="space-y-3">
+                      {clips.length > 0 ? (
+                        clips.map(clip => (
+                          <div key={clip.id} className="liquid-glass p-3 rounded-lg flex items-center justify-between border-l-4 border-l-primary group">
+                            <div className="flex items-center gap-3">
+                              <div className="size-12 rounded bg-background-dark overflow-hidden relative flex-shrink-0">
+                                <img 
+                                  className="w-full h-full object-cover" 
+                                  src={clip.thumbnail} 
+                                  alt={clip.title}
+                                  referrerPolicy="no-referrer"
+                                />
+                                <div className="absolute inset-0 bg-primary/10"></div>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-medium text-sm text-slate-100 truncate">{clip.title}</p>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-primary font-bold">{clip.score}</span>
+                                  <span className="text-[10px] text-slate-500">• {Math.floor((clip.end - clip.start) / 60)}:{Math.floor((clip.end - clip.start) % 60).toString().padStart(2, '0')}s</span>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <button 
+                                onClick={() => seekTo(clip.start)}
+                                className="bg-primary/20 text-primary p-2 rounded-full hover:bg-primary/30 transition-colors flex items-center justify-center"
+                              >
+                                <span className="material-symbols-outlined text-sm">play_arrow</span>
+                              </button>
+                              <button 
+                                onClick={() => setSelectedClipForShare(clip)}
+                                className="bg-primary text-background-dark p-2 rounded-full hover:scale-105 transition-transform flex items-center justify-center"
+                              >
+                                <span className="material-symbols-outlined text-sm">share</span>
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="liquid-glass p-8 rounded-lg text-center border border-dashed border-primary/30">
+                          <span className="material-symbols-outlined text-3xl text-primary/50 mb-2">sentiment_dissatisfied</span>
+                          <p className="text-sm text-slate-400">No viral candidates identified yet.</p>
+                        </div>
+                      )}
+                    </div>
+                  </section>
                 </div>
-              </section>
+              </div>
             </motion.div>
           )}
 
@@ -1081,7 +1451,7 @@ export default function App() {
                     <div className="aspect-video relative bg-black">
                       <img src={clip.thumbnail} className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" referrerPolicy="no-referrer" />
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setVideoSource(videoSource); setActiveTab('dashboard'); seekTo(clip.start); }} className="size-12 rounded-full bg-primary text-background-dark flex items-center justify-center shadow-xl">
+                        <button onClick={() => { setVideoSource(videoSource); navigateTo('dashboard'); seekTo(clip.start); }} className="size-12 rounded-full bg-primary text-background-dark flex items-center justify-center shadow-xl">
                           <span className="material-symbols-outlined">play_arrow</span>
                         </button>
                       </div>
@@ -1135,100 +1505,6 @@ export default function App() {
             </motion.div>
           )}
 
-          <AnimatePresence>
-            {selectedClipForShare && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
-                onClick={() => !isExporting && setSelectedClipForShare(null)}
-              >
-                <motion.div 
-                  initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                  animate={{ scale: 1, opacity: 1, y: 0 }}
-                  exit={{ scale: 0.9, opacity: 0, y: 20 }}
-                  className="liquid-glass w-full max-w-md p-8 rounded-3xl border border-primary/20 space-y-6"
-                  onClick={e => e.stopPropagation()}
-                >
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-xl font-bold text-white">Export & Share</h3>
-                    <button 
-                      onClick={() => setSelectedClipForShare(null)}
-                      className="p-2 hover:bg-white/10 rounded-full text-slate-400"
-                    >
-                      <X className="size-5" />
-                    </button>
-                  </div>
-
-                  <div className="aspect-video rounded-2xl overflow-hidden border border-white/10 bg-black relative">
-                    <img src={selectedClipForShare.thumbnail} className="w-full h-full object-cover opacity-50" />
-                    <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
-                      <p className="text-white font-bold text-lg">{selectedClipForShare.title}</p>
-                      <p className="text-primary text-sm font-mono mt-1">{selectedClipForShare.score} Viral Score</p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Post Directly To</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      <button 
-                        onClick={() => handleSocialShare('x', selectedClipForShare)}
-                        className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
-                      >
-                        <div className="size-10 rounded-full bg-black flex items-center justify-center border border-white/10 group-hover:border-primary/30">
-                          <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                        </div>
-                        <span className="text-xs text-slate-300">X (Twitter)</span>
-                      </button>
-                      <button 
-                        onClick={() => handleSocialShare('linkedin', selectedClipForShare)}
-                        className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
-                      >
-                        <div className="size-10 rounded-full bg-[#0077b5] flex items-center justify-center border border-white/10 group-hover:border-primary/30">
-                          <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.761 0 5-2.239 5-5v-14c0-2.761-2.239-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>
-                        </div>
-                        <span className="text-xs text-slate-300">LinkedIn</span>
-                      </button>
-                      <button 
-                        onClick={() => handleSocialShare('tiktok', selectedClipForShare)}
-                        className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
-                      >
-                        <div className="size-10 rounded-full bg-black flex items-center justify-center border border-white/10 group-hover:border-primary/30">
-                          <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.17-2.89-.6-4.09-1.47-.88-.64-1.61-1.47-2.11-2.43v10.31c.02 1.29-.31 2.62-1.01 3.73-.7 1.11-1.74 1.99-2.97 2.45-1.23.46-2.59.52-3.85.18-1.26-.34-2.39-1.08-3.21-2.09-.82-1.01-1.28-2.31-1.32-3.62-.04-1.31.33-2.63 1.05-3.72.72-1.09 1.79-1.94 3.02-2.36 1.23-.42 2.58-.43 3.82-.04v4.03c-.88-.25-1.85-.22-2.71.1-.86.32-1.58.98-1.99 1.8-.41.82-.49 1.79-.22 2.67.27.88.89 1.63 1.69 2.08.8.45 1.76.57 2.65.34.89-.23 1.66-.8 2.15-1.56.49-.76.68-1.69.54-2.58v-14.3z"/></svg>
-                        </div>
-                        <span className="text-xs text-slate-300">TikTok</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="pt-4 border-t border-white/10">
-                    <button 
-                      onClick={() => handleDownloadClip(selectedClipForShare)}
-                      disabled={isExporting}
-                      className="w-full py-4 bg-primary text-background-dark rounded-2xl font-bold flex items-center justify-center gap-2 hover:scale-[1.02] transition-all disabled:opacity-50 disabled:scale-100"
-                    >
-                      {isExporting ? (
-                        <>
-                          <Loader2 className="size-5 animate-spin" />
-                          Processing Clip...
-                        </>
-                      ) : (
-                        <>
-                          <span className="material-symbols-outlined">download</span>
-                          Download High-Res Clip
-                        </>
-                      )}
-                    </button>
-                    <p className="text-[10px] text-center text-slate-500 mt-3">
-                      Clip will be exported as a high-quality MP4 file optimized for mobile viewing.
-                    </p>
-                  </div>
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
           {activeTab === 'library' && (
             <motion.div 
               key="library"
@@ -1258,7 +1534,7 @@ export default function App() {
                       setTranscript(item.transcript);
                       setClips(item.clips);
                       setVideoSource(item.videoSource);
-                      setActiveTab('dashboard');
+                      navigateTo('dashboard');
                     }}
                     className="liquid-glass p-4 rounded-2xl border border-primary/10 hover:border-primary/40 transition-all cursor-pointer flex items-center gap-4 group"
                   >
@@ -1483,61 +1759,123 @@ export default function App() {
             {status || 'Processing Content...'}
           </motion.div>
         )}
-      </main>
 
-      {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 inset-x-0 bg-background-dark/80 backdrop-blur-xl border-t border-primary/20 px-6 py-3 flex justify-between items-center z-50">
-        <button 
-          onClick={() => setActiveTab('dashboard')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-colors",
-            activeTab === 'dashboard' ? "text-primary" : "text-slate-500"
+        <AnimatePresence>
+          {selectedClipForShare && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+              onClick={() => !isExporting && setSelectedClipForShare(null)}
+            >
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="liquid-glass w-full max-w-md p-8 rounded-3xl border border-primary/20 space-y-6"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex justify-between items-center">
+                  <h3 className="text-xl font-bold text-white">Export & Share</h3>
+                  <button 
+                    onClick={() => setSelectedClipForShare(null)}
+                    className="p-2 hover:bg-white/10 rounded-full text-slate-400"
+                  >
+                    <X className="size-5" />
+                  </button>
+                </div>
+
+                <div className="aspect-video rounded-2xl overflow-hidden border border-white/10 bg-black relative">
+                  <img src={selectedClipForShare.thumbnail} className="w-full h-full object-cover opacity-50" />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
+                    <p className="text-white font-bold text-lg">{selectedClipForShare.title}</p>
+                    <p className="text-primary text-sm font-mono mt-1">{selectedClipForShare.score} Viral Score</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Post Directly To</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <button 
+                      onClick={() => handleSocialShare('x', selectedClipForShare)}
+                      className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
+                    >
+                      <div className="size-10 rounded-full bg-black flex items-center justify-center border border-white/10 group-hover:border-primary/30">
+                        <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                      </div>
+                      <span className="text-xs text-slate-300">X (Twitter)</span>
+                    </button>
+                    <button 
+                      onClick={() => handleSocialShare('linkedin', selectedClipForShare)}
+                      className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
+                    >
+                      <div className="size-10 rounded-full bg-[#0077b5] flex items-center justify-center border border-white/10 group-hover:border-primary/30">
+                        <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.761 0 5-2.239 5-5v-14c0-2.761-2.239-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>
+                      </div>
+                      <span className="text-xs text-slate-300">LinkedIn</span>
+                    </button>
+                    <button 
+                      onClick={() => handleSocialShare('tiktok', selectedClipForShare)}
+                      className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-primary/50 hover:bg-primary/5 transition-all group"
+                    >
+                      <div className="size-10 rounded-full bg-black flex items-center justify-center border border-white/10 group-hover:border-primary/30">
+                        <svg className="size-5 fill-white" viewBox="0 0 24 24"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.17-2.89-.6-4.09-1.47-.88-.64-1.61-1.47-2.11-2.43v10.31c.02 1.29-.31 2.62-1.01 3.73-.7 1.11-1.74 1.99-2.97 2.45-1.23.46-2.59.52-3.85.18-1.26-.34-2.39-1.08-3.21-2.09-.82-1.01-1.28-2.31-1.32-3.62-.04-1.31.33-2.63 1.05-3.72.72-1.09 1.79-1.94 3.02-2.36 1.23-.42 2.58-.43 3.82-.04v4.03c-.88-.25-1.85-.22-2.71.1-.86.32-1.58.98-1.99 1.8-.41.82-.49 1.79-.22 2.67.27.88.89 1.63 1.69 2.08.8.45 1.76.57 2.65.34.89-.23 1.66-.8 2.15-1.56.49-.76.68-1.69.54-2.58v-14.3z"/></svg>
+                      </div>
+                      <span className="text-xs text-slate-300">TikTok</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-white/10">
+                  <button 
+                    onClick={() => handleDownloadClip(selectedClipForShare)}
+                    disabled={isExporting}
+                    className="w-full py-4 bg-primary text-background-dark rounded-2xl font-bold flex items-center justify-center gap-2 hover:scale-[1.02] transition-all disabled:opacity-50 disabled:scale-100"
+                  >
+                    {isExporting ? (
+                      <>
+                        <Loader2 className="size-5 animate-spin" />
+                        Processing Clip...
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined">download</span>
+                        Download High-Res Clip
+                      </>
+                    )}
+                  </button>
+                  <p className="text-[10px] text-center text-slate-500 mt-3">
+                    Clip will be exported as a high-quality MP4 file optimized for mobile viewing.
+                  </p>
+                </div>
+              </motion.div>
+            </motion.div>
           )}
-        >
-          <span className={cn("material-symbols-outlined", activeTab === 'dashboard' && "fill-1")}>auto_awesome</span>
-          <span className="text-[10px] font-medium">Editor</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab('upload')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-colors",
-            activeTab === 'upload' ? "text-primary" : "text-slate-500"
-          )}
-        >
-          <span className={cn("material-symbols-outlined", activeTab === 'upload' && "fill-1")}>add_circle</span>
-          <span className="text-[10px] font-medium">New</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab('clips')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-colors",
-            activeTab === 'clips' ? "text-primary" : "text-slate-500"
-          )}
-        >
-          <span className={cn("material-symbols-outlined", activeTab === 'clips' && "fill-1")}>video_library</span>
-          <span className="text-[10px] font-medium">Clips</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab('library')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-colors",
-            activeTab === 'library' ? "text-primary" : "text-slate-500"
-          )}
-        >
-          <span className={cn("material-symbols-outlined", activeTab === 'library' && "fill-1")}>folder_open</span>
-          <span className="text-[10px] font-medium">Library</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab('settings')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-colors",
-            activeTab === 'settings' ? "text-primary" : "text-slate-500"
-          )}
-        >
-          <span className={cn("material-symbols-outlined", activeTab === 'settings' && "fill-1")}>settings</span>
-          <span className="text-[10px] font-medium">Settings</span>
-        </button>
-      </nav>
+        </AnimatePresence>
+        {/* Mobile Bottom Nav */}
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-background-dark/90 backdrop-blur-xl border-t border-primary/10 flex items-center justify-around p-2 z-40 pb-safe">
+          {[
+            { id: 'overview', icon: <LayoutDashboard className="size-5" />, label: 'Home' },
+            { id: 'upload', icon: <Video className="size-5" />, label: 'New' },
+            { id: 'clips', icon: <TrendingUp className="size-5" />, label: 'Viral' },
+            { id: 'library', icon: <Library className="size-5" />, label: 'Lib' },
+            { id: 'settings', icon: <SettingsIcon className="size-5" />, label: 'Set' },
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => navigateTo(item.id as any)}
+              className={cn(
+                "flex flex-col items-center gap-1 p-2 rounded-xl transition-all",
+                activeTab === item.id ? "text-primary" : "text-slate-500"
+              )}
+            >
+              {item.icon}
+              <span className="text-[10px] font-bold uppercase tracking-tighter">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </main>
     </div>
   );
 }

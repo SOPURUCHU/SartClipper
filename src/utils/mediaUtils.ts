@@ -5,38 +5,31 @@
  */
 
 export async function extractAudioFromVideo(videoFile: File): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const reader = new FileReader();
-
-    reader.onload = async (e) => {
-      try {
-        const arrayBuffer = e.target?.result as ArrayBuffer;
-        const originalBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        
-        // Downsample to 16kHz Mono for faster processing and smaller payload
-        const targetSampleRate = 16000;
-        const offlineCtx = new OfflineAudioContext(
-          1, // mono
-          Math.floor(originalBuffer.duration * targetSampleRate),
-          targetSampleRate
-        );
-        
-        const source = offlineCtx.createBufferSource();
-        source.buffer = originalBuffer;
-        source.connect(offlineCtx.destination);
-        source.start();
-        
-        const renderedBuffer = await offlineCtx.startRendering();
-        const wavBlob = audioBufferToWav(renderedBuffer);
-        resolve(wavBlob);
-      } catch (err) {
-        reject(err);
-      }
-    };
-
-    reader.onerror = () => reject(new Error("Failed to read video file"));
-    reader.readAsArrayBuffer(videoFile);
+  return new Promise(async (resolve, reject) => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const arrayBuffer = await videoFile.arrayBuffer();
+      const originalBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      // Downsample to 12kHz Mono - good balance for speech transcription speed/quality
+      const targetSampleRate = 12000;
+      const offlineCtx = new OfflineAudioContext(
+        1, // mono
+        Math.floor(originalBuffer.duration * targetSampleRate),
+        targetSampleRate
+      );
+      
+      const source = offlineCtx.createBufferSource();
+      source.buffer = originalBuffer;
+      source.connect(offlineCtx.destination);
+      source.start();
+      
+      const renderedBuffer = await offlineCtx.startRendering();
+      const wavBlob = audioBufferToWav(renderedBuffer);
+      resolve(wavBlob);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
